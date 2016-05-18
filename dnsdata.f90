@@ -6,10 +6,10 @@
 !        of a turbulent channel flow         !
 !                                            !
 !============================================!
-!
+! 
 ! Author: Dr.-Ing. Davide Gatti
 ! Date  : 28/Jul/2015
-!
+! 
 
 !#define IMPULSE
 !#define fx
@@ -26,6 +26,11 @@ MODULE dnsdata
   integer(C_INT) :: nx,ny,nz,nxd,nzd
   real(C_DOUBLE) :: alfa0,beta0,ni,a,ymin,ymax,deltat,cflmax,time,dt_field,dt_save,t_max
   real(C_DOUBLE) :: meanpx,meanpz,meanflowx,meanflowz
+  integer(C_INT), allocatable :: izd(:)
+  complex(C_DOUBLE_COMPLEX), allocatable :: ialfa(:),ibeta(:)
+  real(C_DOUBLE), allocatable :: k2(:,:)
+  !Restart parameters
+
   !Impulse response parameters
 #ifdef IMPULSE
   integer(C_INT) :: nxh,nzh,ndtresp,iyforcing
@@ -59,11 +64,12 @@ MODULE dnsdata
   !Boundary conditions
   real(C_DOUBLE), dimension(-2:2) :: v0bc,v0m1bc,vnbc,vnp1bc,eta0bc,eta0m1bc,etanbc,etanp1bc
   TYPE(BCOND),    allocatable :: bc0(:,:), bcn(:,:)
-  !ODE library coefficients
-  real(C_DOUBLE), parameter :: CN_AB_coeff=2.0d0
-  real(C_DOUBLE), parameter :: RK1_rai_coeff=120.0d0/32.0d0, RK2_rai_coeff=120.0d0/8.0d0, RK3_rai_coeff=120.0d0/20.0d0
   !Mean pressure correction
   real(C_DOUBLE), private :: corrpx=0.d0, corrpz=0.d0
+  !ODE Library
+  real(C_DOUBLE) :: RK1_rai(1:3)=(/ 120.0d0/32.0d0, 2.0d0, 0.0d0 /), &
+                    RK2_rai(1:3)=(/ 120.0d0/8.0d0, 50.0d0/8.0d0, 34.0d0/8.0d0 /), &
+                    RK3_rai(1:3)=(/ 120.0d0/20.0d0, 90.0d0/20.0d0, 50.0d0/20.0d0 /)
   !Outstats
   real(C_DOUBLE) :: cfl=0.0d0
 
@@ -73,7 +79,7 @@ MODULE dnsdata
   !---------------------- Read input files ----------------------!
   SUBROUTINE read_dnsin()
     OPEN(15, file='dns.in')
-    READ(15, *) nx, ny, nz; READ(15, *) alfa0, beta0; nxd=3*(nx+1)/2;nzd=3*nz
+    READ(15, *) nx, ny, nz; READ(15, *) alfa0, beta0; nxd=3*nx/2;nzd=3*nz
     READ(15, *) ni; READ(15, *) a, ymin, ymax; ni=1/ni
     READ(15, *) meanpx, meanpz; READ(15, *) meanflowx, meanflowz
     READ(15, *) deltat, cflmax, time
@@ -89,13 +95,18 @@ MODULE dnsdata
   !--------------------------------------------------------------!
   !---------------- Allocate memory for solution ----------------!
   SUBROUTINE init_memory()
+    INTEGER(C_INT) :: ix,iz
     ALLOCATE(V(-1:ny+1,0:nx,-nz:nz,1:3))
     ALLOCATE(memrhs(0:2,0:nx,-nz:nz),oldrhs(-1:ny+1,0:nx,-nz:nz),bc0(0:nx,-nz:nz),bcn(0:nx,-nz:nz))
 #define newrhs(iy,ix,iz) memrhs(MOD(iy+1000,3),ix,iz)
 #define imod(iy) MOD(iy+1000,5)
     ALLOCATE(der(1:ny-1),d0mat(1:ny-1,-2:2),etamat(1:ny-1,-2:2),D2vmat(1:ny-1,-2:2),y(-1:ny+1),dy(1:ny-1))
+    ALLOCATE(izd(-nz:nz),ialfa(0:nx),ibeta(-nz:nz),k2(0:nx,-nz:nz))
     y=(/(ymin+0.5d0*(ymax-ymin)*(tanh(a*(2.0d0*real(iy)/real(ny)-1))/tanh(a)+0.5d0*(ymax-ymin)), iy=-1, ny+1)/)
     dy=(/( 0.5d0*(y(iy+1)-y(iy-1)) , iy=1, ny-1)/)
+    izd=(/(merge(iy,nzd+iy,iy>=0),iz=-nz,nz)/);     ialfa=(/(dcmplx(0.0d0,iy*alfa0),ix=0,nx)/);
+    ibeta=(/(dcmplx(0.0d0,iy*beta0),iz=-nz,nz)/); 
+    FORALL  (ix=0:nx, iz=-nz:nz) k2(ix,iz)=(alfa0*ix)**2.0d0+(beta0*iz)**2.0d0
 #ifdef IMPULSE
     ALLOCATE(F(-1:ny+1,0:nx,-nz:nz,1:3),history(0:ndtresp,0:nxh,-nzh:nzh,1:3))
 #ifdef fx
@@ -116,7 +127,7 @@ MODULE dnsdata
   !--------------------------------------------------------------!
   !-------------- Updating the body forcing (WN)  ---------------!
   SUBROUTINE update_noise()
-    integer(C_INT) :: it,ix,iz,i
+    integer(C_INT) :: it,ix,iz
     real(C_DOUBLE) :: rn(1:3)
     DO it=ndtresp,1,-1
       history(:,:,it,:)=history(:,:,it-1,:)
@@ -153,23 +164,21 @@ MODULE dnsdata
   !------------ Updating input-output correlation -------------!
   SUBROUTINE update_correlation()
     integer(C_INT) :: it,ix,iz
-    complex(C_DOUBLE_COMPLEX) :: alfa, beta
     DO it=ndtresp,1,-1
       history(:,:,it,:)=history(:,:,it-1,:)
     END DO
     DO CONCURRENT (it=0:ndtresp,iy=0:ny,ix=0:nxh,iz=-nzh:nzh)
-      alfa = dcmplx(0,ix*alfa0); beta = dcmplx(0,iz*beta0)
 #ifdef fx
       Hx(it,iy,ix,iz)%v   = Hx(it,iy,ix,iz)%v   + V(iy,ix,iz,2)*history(it,ix,iz,1)
-      Hx(it,iy,ix,iz)%eta = Hx(it,iy,ix,iz)%eta + (beta*V(iy,ix,iz,1)-alfa*V(iy,ix,iz,3))*history(it,ix,iz,1)
+      Hx(it,iy,ix,iz)%eta = Hx(it,iy,ix,iz)%eta + (ibeta(iz)*V(iy,ix,iz,1)-ialfa(ix)*V(iy,ix,iz,3))*history(it,ix,iz,1)
 #endif
 #ifdef fy
       Hy(it,iy,ix,iz)%v   = Hy(it,iy,ix,iz)%v   + V(iy,ix,iz,2)*history(it,ix,iz,2)
-      Hy(it,iy,ix,iz)%eta = Hy(it,iy,ix,iz)%eta + (beta*V(iy,ix,iz,1)-alfa*V(iy,ix,iz,3))*history(it,ix,iz,2)
+      Hy(it,iy,ix,iz)%eta = Hy(it,iy,ix,iz)%eta + (ibeta(iz)*V(iy,ix,iz,1)-ialfa(ix)*V(iy,ix,iz,3))*history(it,ix,iz,2)
 #endif
 #ifdef fz
       Hz(it,iy,ix,iz)%v   = Hz(it,iy,ix,iz)%v   + V(iy,ix,iz,2)*history(it,ix,iz,3)
-      Hz(it,iy,ix,iz)%eta = Hz(it,iy,ix,iz)%eta + (beta*V(iy,ix,iz,1)-alfa*V(iy,ix,iz,3))*history(it,ix,iz,3)
+      Hz(it,iy,ix,iz)%eta = Hz(it,iy,ix,iz)%eta + (ibeta(iz)*V(iy,ix,iz,1)-ialfa(ix)*V(iy,ix,iz,3))*history(it,ix,iz,3)
 #endif  
     END DO
   END SUBROUTINE update_correlation
@@ -244,14 +253,14 @@ MODULE dnsdata
     END DO
   END FUNCTION yintegr
 
-#define rD0(f,g,k) sum(dcmplx(der(iy)%d0(-2:2)*dreal(f(iy-2:iy+2,ix,iz,g)) ,der(iy)%d0(-2:2)*dreal(f(iy-2:iy+2,ix,iz,k))))
-#define rD1(f,g,k) sum(dcmplx(der(iy)%d1(-2:2)*dreal(f(iy-2:iy+2,ix,iz,g)) ,der(iy)%d1(-2:2)*dreal(f(iy-2:iy+2,ix,iz,k))))
-#define rD2(f,g,k) sum(dcmplx(der(iy)%d2(-2:2)*dreal(f(iy-2:iy+2,ix,iz,g)) ,der(iy)%d2(-2:2)*dreal(f(iy-2:iy+2,ix,iz,k))))
-#define rD4(f,g,k) sum(dcmplx(der(iy)%d4(-2:2)*dreal(f(iy-2:iy+2,ix,iz,g)) ,der(iy)%d4(-2:2)*dreal(f(iy-2:iy+2,ix,iz,k))))
-#define D0(f,g) sum(dcmplx(der(iy)%d0(-2:2)*dreal(f(iy-2:iy+2,ix,iz,g)) ,der(iy)%d0(-2:2)*dimag(f(iy-2:iy+2,ix,iz,g))))
-#define D1(f,g) sum(dcmplx(der(iy)%d1(-2:2)*dreal(f(iy-2:iy+2,ix,iz,g)) ,der(iy)%d1(-2:2)*dimag(f(iy-2:iy+2,ix,iz,g))))
-#define D2(f,g) sum(dcmplx(der(iy)%d2(-2:2)*dreal(f(iy-2:iy+2,ix,iz,g)) ,der(iy)%d2(-2:2)*dimag(f(iy-2:iy+2,ix,iz,g))))
-#define D4(f,g) sum(dcmplx(der(iy)%d4(-2:2)*dreal(f(iy-2:iy+2,ix,iz,g)) ,der(iy)%d4(-2:2)*dimag(f(iy-2:iy+2,ix,iz,g))))
+#define rD0(f,g,k) sum(dcmplx(der(iy)%d0(-2:2)*dreal(f(-2:2,g,ix)) ,der(iy)%d0(-2:2)*dreal(f(-2:2,k,ix))))
+#define rD1(f,g,k) sum(dcmplx(der(iy)%d1(-2:2)*dreal(f(-2:2,g,ix)) ,der(iy)%d1(-2:2)*dreal(f(-2:2,k,ix))))
+#define rD2(f,g,k) sum(dcmplx(der(iy)%d2(-2:2)*dreal(f(-2:2,g,ix)) ,der(iy)%d2(-2:2)*dreal(f(-2:2,k,ix))))
+#define rD4(f,g,k) sum(dcmplx(der(iy)%d4(-2:2)*dreal(f(-2:2,g,ix)) ,der(iy)%d4(-2:2)*dreal(f(-2:2,k,ix))))
+#define D0(f,g) sum(dcmplx(der(iy)%d0(-2:2)*dreal(f(-2:2,g,ix)) ,der(iy)%d0(-2:2)*dimag(f(-2:2,g,ix))))
+#define D1(f,g) sum(dcmplx(der(iy)%d1(-2:2)*dreal(f(-2:2,g,ix)) ,der(iy)%d1(-2:2)*dimag(f(-2:2,g,ix))))
+#define D2(f,g) sum(dcmplx(der(iy)%d2(-2:2)*dreal(f(-2:2,g,ix)) ,der(iy)%d2(-2:2)*dimag(f(-2:2,g,ix))))
+#define D4(f,g) sum(dcmplx(der(iy)%d4(-2:2)*dreal(f(-2:2,g,ix)) ,der(iy)%d4(-2:2)*dimag(f(-2:2,g,ix))))
   !--------------------------------------------------------------!
   !---COMPLEX----- derivative in the y-direction ----------------!
   SUBROUTINE COMPLEXderiv(f0,f1)
@@ -268,8 +277,8 @@ MODULE dnsdata
     f1(2)=f1(2)-der(2)%d0(-2)*f1(0)
     f1(ny-1)=f1(ny-1)-(der(ny-1)%d0(1)*f1(ny)+der(ny-1)%d0(2)*f1(ny+1))
     f1(ny-2)=f1(ny-2)-der(ny-2)%d0(2)*f1(ny)
-    f1(1:ny-1)=dcmplx(D0mat.bsr.dreal(f1(1:ny-1)),D0mat.bsr.dimag(f1(1:ny-1)))
-    !CALL LeftLU5div(D0mat,f1(1:ny-1))
+    !f1(1:ny-1)=dcmplx(D0mat.bsr.dreal(f1(1:ny-1)),D0mat.bsr.dimag(f1(1:ny-1)))
+    CALL LeftLU5div(D0mat,f1(1:ny-1))
   END SUBROUTINE COMPLEXderiv
 
   !--------------------------------------------------------------!
@@ -291,32 +300,28 @@ MODULE dnsdata
   END SUBROUTINE applybc_n
 
 
-#define OS(iy,j) (ni*(der(iy)%d4(j)-2.0d0*k2*der(iy)%d2(j)+k2*k2*der(iy)%d0(j)))
-#define SQ(iy,j) (ni*(der(iy)%d2(j)-k2*der(iy)%d0(j)))
+#define OS(iy,j) (ni*(der(iy)%d4(j)-2.0d0*k2(ix,iz)*der(iy)%d2(j)+k2(ix,iz)*k2(ix,iz)*der(iy)%d0(j)))
+#define SQ(iy,j) (ni*(der(iy)%d2(j)-k2(ix,iz)*der(iy)%d0(j)))
   !--------------------------------------------------------------!
   !------------------- solve the linear system  -----------------!
   SUBROUTINE linsolve(lambda)
     real(C_DOUBLE), intent(in) :: lambda
     integer(C_INT) :: ix,iz
-    complex(C_DOUBLE_COMPLEX) :: ialfa,ibeta,temp(-1:ny+1)
-    real(C_DOUBLE) :: k2
+    complex(C_DOUBLE_COMPLEX) :: temp(-1:ny+1)
     real(C_DOUBLE) :: ucor(-1:ny+1)
     DO iz=-nz,nz
-      ibeta=dcmplx(0.0d0,beta0*iz);
       DO ix=0,nx
-        ialfa=dcmplx(0.0d0,alfa0*ix)
-        k2=(alfa0*ix)**2.0d0+(beta0*iz)**2.0d0
         IF (ix==0 .AND. iz==0) THEN
           bc0(ix,iz)%v=0; bc0(ix,iz)%vy=0; bc0(ix,iz)%eta=dcmplx(dreal(bc0(ix,iz)%u)-dimag(bc0(ix,iz)%w),dimag(bc0(ix,iz)%u)+dreal(bc0(ix,iz)%w))
           bcn(ix,iz)%v=0; bcn(ix,iz)%vy=0; bcn(ix,iz)%eta=dcmplx(dreal(bcn(ix,iz)%u)-dimag(bcn(ix,iz)%w),dimag(bcn(ix,iz)%u)+dreal(bcn(ix,iz)%w))
         ELSE
-          bc0(ix,iz)%vy=-ialfa*bc0(ix,iz)%u-ibeta*bc0(ix,iz)%w; bc0(ix,iz)%eta=ibeta*bc0(ix,iz)%u-ialfa*bc0(ix,iz)%w
-          bcn(ix,iz)%vy=-ialfa*bcn(ix,iz)%u-ibeta*bcn(ix,iz)%w; bcn(ix,iz)%eta=ibeta*bcn(ix,iz)%u-ialfa*bcn(ix,iz)%w
+          bc0(ix,iz)%vy=-ialfa(ix)*bc0(ix,iz)%u-ibeta(iz)*bc0(ix,iz)%w; bc0(ix,iz)%eta=ibeta(iz)*bc0(ix,iz)%u-ialfa(ix)*bc0(ix,iz)%w
+          bcn(ix,iz)%vy=-ialfa(ix)*bcn(ix,iz)%u-ibeta(iz)*bcn(ix,iz)%w; bcn(ix,iz)%eta=ibeta(iz)*bcn(ix,iz)%u-ialfa(ix)*bcn(ix,iz)%w
         END IF
         bc0(ix,iz)%v=bc0(ix,iz)%v-v0bc(-2)*bc0(ix,iz)%vy/v0m1bc(-2)
         bcn(ix,iz)%v=bcn(ix,iz)%v-vnbc(2)*bcn(ix,iz)%vy/vnp1bc(2)
         DO CONCURRENT (iy=1:ny-1)
-          D2vmat(iy,-2:2)=lambda*(der(iy)%d2(-2:2)-k2*der(iy)%d0(-2:2))-OS(iy,-2:2)
+          D2vmat(iy,-2:2)=lambda*(der(iy)%d2(-2:2)-k2(ix,iz)*der(iy)%d0(-2:2))-OS(iy,-2:2)
           etamat(iy,-2:2)=lambda*der(iy)%d0(-2:2)-SQ(iy,-2:2)
         END DO
         CALL applybc_0(D2vmat,v0bc,v0m1bc)
@@ -357,8 +362,8 @@ MODULE dnsdata
             END IF
         ELSE
             CALL COMPLEXderiv(V(:,ix,iz,2),V(:,ix,iz,3))
-            temp=(ialfa*V(:,ix,iz,3)-ibeta*V(:,ix,iz,1))/k2
-            V(:,ix,iz,3)=(ibeta*V(:,ix,iz,3)+ialfa*V(:,ix,iz,1))/k2
+            temp=(ialfa(ix)*V(:,ix,iz,3)-ibeta(iz)*V(:,ix,iz,1))/k2(ix,iz)
+            V(:,ix,iz,3)=(ibeta(iz)*V(:,ix,iz,3)+ialfa(ix)*V(:,ix,iz,1))/k2(ix,iz)
             V(:,ix,iz,1)=temp
         END IF
       END DO
@@ -370,7 +375,6 @@ MODULE dnsdata
  SUBROUTINE convolutions(iy,i,compute_cfl)
     integer(C_INT), intent(in) :: iy,i
     logical, intent(in) :: compute_cfl
-    integer(C_INT) :: ix,iz,iV
     VVd(1:nx+1,1:nz+1,1:3,i)=V(iy,0:nx,0:nz,1:3);         VVd(1:nx+1,nz+2:nzd-nz,1:3,i)=0;
     VVd(1:nx+1,nzd+1-nz:nzd,1:3,i)=V(iy,0:nx,-nz:-1,1:3); VVd(nx+2:nxd+1,1:nzd,1:3,i)=0;
     CALL IFT(VVd(:,:,:,i),rVVd(:,:,:,i))
@@ -393,17 +397,19 @@ MODULE dnsdata
   ! (uu,vv,ww,uv,vw,uw) = (1,2,3,4,5,6)
 #define DD(f,k) ( der(iy)%f(-2)*VVm2(k)+der(iy)%f(-1)*VVm1(k)+der(iy)%f(0)*VV0(k)+der(iy)%f(1)*VV1(k)+der(iy)%f(2)*VV2(k) )
 #define D4F(g,iy) sum(dcmplx(der(iy)%d4(-2:2)*dreal(f(iy-2:iy+2,ix,iz,g)) ,der(iy)%d4(-2:2)*dimag(f(iy-2:iy+2,ix,iz,g))))
-  SUBROUTINE buildrhs(timescheme,compute_cfl)
-    logical, intent(IN) :: compute_cfl
-    integer(C_INT) :: iy,ix,iz,izd,im2,im1,i0,i1,i2
-    complex(C_DOUBLE_COMPLEX) :: ialfa,ibeta,rhsu,rhsv,rhsw,DD0_6,DD1_6
+#define timescheme(rhs,old,unkn,impl,expl) rhs=ODE(1)*(unkn)/deltat+(impl)+ODE(2)*(expl)-ODE(3)*(old); old=expl                   
+  SUBROUTINE buildrhs(ODE,compute_cfl)
+    logical, intent(in) :: compute_cfl
+    real(C_DOUBLE), intent(in) :: ODE(1:3)
+    integer(C_INT) :: iy,ix,iz,im2,im1,i0,i1,i2,i
+    complex(C_DOUBLE_COMPLEX) :: rhsu,rhsv,rhsw,DD0_6,DD1_6,expl
     complex(C_DOUBLE_COMPLEX), dimension(1:6) :: VVm2,VVm1,VV0,VV1,VV2
-    real(C_DOUBLE) :: k2
+    complex(C_DOUBLE_COMPLEX) :: Vplane(-2:2,1:3,0:nx), Fplane(-2:2,1:3,0:nx)
 #ifdef IMPULSE
     F(-1:0,:,:,:)=0; F(ny:ny+1,:,:,:)=0;
-    DO CONCURRENT (ix=0:nx,iz=-nz:nz)
-        F(-1,ix,iz,1)=-D4F(1,1)/der(1)%d4(-2);        F(-1,ix,iz,2)=-D4F(2,1)/der(1)%d4(-2);        F(-1,ix,iz,3)=-D4F(3,1)/der(1)%d4(-2); 
-        F(ny+1,ix,iz,1)=-D4F(1,ny-1)/der(ny-1)%d4(2); F(ny+1,ix,iz,2)=-D4F(2,ny-1)/der(ny-1)%d4(2); F(ny+1,ix,iz,3)=-D4F(3,ny-1)/der(ny-1)%d4(2);
+    DO CONCURRENT (ix=0:nx,iz=-nz:nz,i=1:3)
+        F(-1,ix,iz,i)=-D4F(i,1)/der(1)%d4(-2);       
+        F(ny+1,ix,iz,i)=-D4F(i,ny-1)/der(ny-1)%d4(2);
     END DO
 #endif
     DO iy=-3,ny+1
@@ -412,46 +418,47 @@ MODULE dnsdata
       IF (iy>=1) THEN
         im2=imod(iy-2)+1; im1=imod(iy-1)+1; i0=imod(iy)+1; i1=imod(iy+1)+1; i2=imod(iy+2)+1;
         DO iz=-nz,nz 
-          izd=merge(iz,nzd+iz,iz>=0)
-          ibeta=dcmplx(0.0d0,beta0*iz)
-          DO ix=0,nx
-            VVm2=VVd(ix+1,izd+1,1:6,im2); VVm1=VVd(ix+1,izd+1,1:6,im1); VV0=VVd(ix+1,izd+1,1:6,i0); 
-            VV1=VVd(ix+1,izd+1,1:6,i1);   VV2=VVd(ix+1,izd+1,1:6,i2);
-            ialfa=dcmplx(0.0d0,alfa0*ix)
-            k2=(alfa0*ix)**2.0d0 + (beta0*iz)**2.0d0
+        DO CONCURRENT (ix=0:nx) 
+          Vplane(:,:,ix)=V(iy-2:iy+2,ix,iz,:); 
+#ifdef IMPULSE
+          Fplane(:,:,ix)=F(iy-2:iy+2,ix,iz,:);
+#endif
+        END DO
+        DO ix=0,nx
+            VVm2=VVd(ix+1,izd(iz)+1,1:6,im2); VVm1=VVd(ix+1,izd(iz)+1,1:6,im1); VV0=VVd(ix+1,izd(iz)+1,1:6,i0); 
+            VV1=VVd(ix+1,izd(iz)+1,1:6,i1);   VV2=VVd(ix+1,izd(iz)+1,1:6,i2);   
             DD0_6=DD(d0,6); DD1_6=DD(d1,6);
-            rhsu=-ialfa*DD(d0,1)-DD(d1,4)-ibeta*DD0_6
-            rhsv=-ialfa*DD(d0,4)-DD(d1,2)-ibeta*DD(d0,5)
-            rhsw=-ialfa*DD0_6-DD(d1,5)-ibeta*DD(d0,3)
-            CALL timescheme(newrhs(iy,ix,iz)%D2v, oldrhs(iy,ix,iz)%D2v, D2(V,2)-k2*D0(V,2),&
-                            sum(OS(iy,-2:2)*V(iy-2:iy+2,ix,iz,2)),&
-                            ialfa*(ialfa*DD(d1,1)+DD(d2,4)+ibeta*DD1_6)+&
-                            ibeta*(ialfa*DD1_6+DD(d2,5)+ibeta*DD(d1,3))-k2*rhsv&
+            rhsu=-ialfa(ix)*DD(d0,1)-DD(d1,4)-ibeta(iz)*DD0_6
+            rhsv=-ialfa(ix)*DD(d0,4)-DD(d1,2)-ibeta(iz)*DD(d0,5)
+            rhsw=-ialfa(ix)*DD0_6-DD(d1,5)-ibeta(iz)*DD(d0,3)
+            expl=(ialfa(ix)*(ialfa(ix)*DD(d1,1)+DD(d2,4)+ibeta(iz)*DD1_6)+&
+                  ibeta(iz)*(ialfa(ix)*DD1_6+DD(d2,5)+ibeta(iz)*DD(d1,3))-k2(ix,iz)*rhsv &
 #ifdef IMPULSE
-                            -k2*D0(F,2)-ialfa*D1(F,1)-ibeta*D1(F,3))   !D2v
+                  -k2(ix,iz)*D0(Fplane,2)-ialfa(ix)*D1(Fplane,1)-ibeta(iz)*D1(Fplane,3))
 #else
-                            ) !D2v
+                 )
 #endif
+            timescheme(newrhs(iy,ix,iz)%D2v, oldrhs(iy,ix,iz)%D2v, D2(Vplane,2)-k2(ix,iz)*D0(Vplane,2),
+                       sum(OS(iy,-2:2)*Vplane(-2:2,2,ix)),expl); !(D2v)
             IF (ix==0 .AND. iz==0) THEN
-              CALL timescheme(newrhs(iy,0,0)%eta,oldrhs(iy,0,0)%eta,rD0(V,1,3),&
-                              ni*rD2(V,1,3),&
-                              dcmplx(dreal(rhsu)+meanpx,dreal(rhsw)+meanpz) &
+              expl=(dcmplx(dreal(rhsu)+meanpx,dreal(rhsw)+meanpz) &
 #ifdef IMPULSE
-                              +rD0(F,1,3))       !(Ubar, Wbar)
+                    +rD0(Fplane,1,3))       
 #else
-                              ) !(Ubar,Wbar)
+                   )
 #endif
+              timescheme(newrhs(iy,0,0)%eta,oldrhs(iy,0,0)%eta,rD0(Vplane,1,3),ni*rD2(Vplane,1,3),expl) !(Ubar, Wbar)
             ELSE
-              CALL timescheme(newrhs(iy,ix,iz)%eta, oldrhs(iy,ix,iz)%eta,ibeta*D0(V,1)-ialfa*D0(V,3),&
-                              sum(SQ(iy,-2:2)*[ibeta*V(iy-2:iy+2,ix,iz,1)-ialfa*V(iy-2:iy+2,ix,iz,3)]),&
-                              ibeta*rhsu-ialfa*rhsw&
+              expl=(ibeta(iz)*rhsu-ialfa(ix)*rhsw &
 #ifdef IMPULSE
-                              +ibeta*D0(F,1)-ialfa*D0(F,3))                               !eta
-#else
-                              ) !eta
+                    +ibeta(iz)*D0(Fplane,1)-ialfa(ix)*D0(Fplane,3))
+#else 
+                   )
 #endif
+              timescheme(newrhs(iy,ix,iz)%eta, oldrhs(iy,ix,iz)%eta,ibeta(iz)*D0(Vplane,1)-ialfa(ix)*D0(Vplane,3),
+                              sum(SQ(iy,-2:2)*[ibeta(iz)*Vplane(-2:2,1,ix)-ialfa(ix)*Vplane(-2:2,3,ix)]),expl) !(eta)
             END IF
-          END DO
+        END DO
         END DO
       END IF
       END IF
@@ -462,40 +469,6 @@ MODULE dnsdata
       END IF      
     END DO
   END SUBROUTINE buildrhs
-
-
-  !--------------------------------------------------------------!
-  !--------------------- ODE schemes library --------------------!
-  PURE SUBROUTINE CN_AB(rhs,old,unkn,impl,expl)
-    complex(C_DOUBLE_COMPLEX), intent(out)   :: rhs
-    complex(C_DOUBLE_COMPLEX), intent(inout) :: old
-    complex(C_DOUBLE_COMPLEX), intent(in) :: unkn,impl,expl
-    rhs=2.0d0/deltat*unkn+impl+3.0d0*expl-old
-    old=expl
-  END SUBROUTINE CN_AB
-
-  PURE SUBROUTINE RK1_rai(rhs,old,unkn,impl,expl)
-    complex(C_DOUBLE_COMPLEX), intent(out)   :: rhs
-    complex(C_DOUBLE_COMPLEX), intent(inout) :: old
-    complex(C_DOUBLE_COMPLEX), intent(in) :: unkn,impl,expl
-    rhs=120.0d0/32.0d0/deltat*unkn+impl+2.0d0*expl
-    old=expl
-  END SUBROUTINE RK1_rai
-
-  PURE SUBROUTINE RK2_rai(rhs,old,unkn,impl,expl)
-    complex(C_DOUBLE_COMPLEX), intent(out)   :: rhs
-    complex(C_DOUBLE_COMPLEX), intent(inout) :: old
-    complex(C_DOUBLE_COMPLEX), intent(in) :: unkn,impl,expl
-    rhs=120.0d0/(8.0d0*deltat)*unkn+impl+50.0d0/8.0d0*expl-34.0d0/8.0d0*old
-    old=expl
-  END SUBROUTINE RK2_rai
-
-  PURE SUBROUTINE RK3_rai(rhs,old,unkn,impl,expl)
-    complex(C_DOUBLE_COMPLEX), intent(out)   :: rhs
-    complex(C_DOUBLE_COMPLEX), intent(inout) :: old
-    complex(C_DOUBLE_COMPLEX), intent(in) :: unkn,impl,expl
-    rhs=120.0d0/(20.0d0*deltat)*unkn+impl+90.0d0/20.0d0*expl-50.0d0/20.0d0*old
-  END SUBROUTINE RK3_rai
 
   !--------------------------------------------------------------!
   !-------------------- read_restart_file -----------------------!

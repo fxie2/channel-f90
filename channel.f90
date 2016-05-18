@@ -41,19 +41,21 @@ PROGRAM channel
   WRITE(*,*) " "
 
   ! Compute CFL
-  DO iy=2,ny-1
-   CALL convolutions(iy,1,.TRUE.)
-  END DO
+  !DO iy=2,ny-1
+
+  ! CALL convolutions(iy,1,.TRUE.)
+  !END DO
+  cfl=1
   ! Time loop
   CALL outstats()
   timeloop: DO WHILE (time<t_max-deltat/2.0) 
     CALL CPU_TIME(timei)
-    time=time+2.0/RK1_rai_coeff*deltat
-    CALL buildrhs(RK1_rai,.TRUE. ); CALL linsolve(RK1_rai_coeff/deltat)
-    time=time+2.0/RK2_rai_coeff*deltat
-    CALL buildrhs(RK2_rai,.FALSE.); CALL linsolve(RK2_rai_coeff/deltat)
-    time=time+2.0/RK3_rai_coeff*deltat
-    CALL buildrhs(RK3_rai,.FALSE.); CALL linsolve(RK3_rai_coeff/deltat)
+    time=time+2.0/RK1_rai(1)*deltat
+    CALL buildrhs(RK1_rai,.TRUE. ); CALL linsolve(RK1_rai(1)/deltat)
+    time=time+2.0/RK2_rai(1)*deltat
+    CALL buildrhs(RK2_rai,.FALSE.); CALL linsolve(RK2_rai(1)/deltat)
+    time=time+2.0/RK3_rai(1)*deltat
+    CALL buildrhs(RK3_rai,.FALSE.); CALL linsolve(RK3_rai(1)/deltat)
     CALL outstats()
     CALL CPU_TIME(timee)
     WRITE(*,*) timee-timei
