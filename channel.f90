@@ -41,11 +41,9 @@ PROGRAM channel
   WRITE(*,*) " "
 
   ! Compute CFL
-  !DO iy=2,ny-1
-
-  ! CALL convolutions(iy,1,.TRUE.)
-  !END DO
-  cfl=1
+  DO iy=0,ny
+   CALL convolutions(iy,1,.TRUE.)
+  END DO
   ! Time loop
   CALL outstats()
   timeloop: DO WHILE (time<t_max-deltat/2.0) 

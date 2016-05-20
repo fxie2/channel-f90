@@ -30,7 +30,7 @@ CONTAINS
     complex(C_DOUBLE_COMPLEX), pointer, dimension(:,:,:,:), intent(out) :: VVd
     real(C_DOUBLE), pointer, dimension(:,:,:,:), intent(out) :: rVVd
     integer(C_INT), dimension(2) :: n
-    n=[2*nxd,nzd];
+    n=[nzd,2*nxd];
     !Allocate aligned memory
     ptrVVd=fftw_alloc_complex(int((nxd+1)*nzd*6*5, C_SIZE_T))
     !Convert C to F pointer 
@@ -50,7 +50,7 @@ CONTAINS
   END SUBROUTINE IFT
 
   SUBROUTINE FFT(rx,x) 
-    complex(C_DOUBLE_COMPLEX), intent(out) :: x(:,:,:)
+    complex(C_DOUBLE_COMPLEX), intent(inout) :: x(:,:,:)
     real(C_DOUBLE),intent(inout) :: rx(:,:,:)
     CALL fftw_execute_dft_r2c(pFFT,rx,x)
   END SUBROUTINE FFT
