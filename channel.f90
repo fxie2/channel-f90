@@ -12,10 +12,15 @@
 ! Date  : 28/Jul/2015
 ! 
 
+! Measure per timestep execution time
+#define chron
+
 PROGRAM channel
 
   USE dnsdata
+#ifdef crhon
   REAL timei,timee 
+#endif
 
   ! Read simulation params
   CALL read_dnsin()
@@ -47,7 +52,9 @@ PROGRAM channel
   ! Time loop
   CALL outstats()
   timeloop: DO WHILE (time<t_max-deltat/2.0) 
+#ifdef chron
     CALL CPU_TIME(timei)
+#endif
     time=time+2.0/RK1_rai(1)*deltat
     CALL buildrhs(RK1_rai,.TRUE. ); CALL linsolve(RK1_rai(1)/deltat)
     time=time+2.0/RK2_rai(1)*deltat
@@ -55,8 +62,10 @@ PROGRAM channel
     time=time+2.0/RK3_rai(1)*deltat
     CALL buildrhs(RK3_rai,.FALSE.); CALL linsolve(RK3_rai(1)/deltat)
     CALL outstats()
+#ifdef chron
     CALL CPU_TIME(timee)
     WRITE(*,*) timee-timei
+#endif
   END DO timeloop
 
   ! Realease memory

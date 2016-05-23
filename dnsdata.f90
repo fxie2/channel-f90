@@ -11,8 +11,14 @@
 ! Date  : 28/Jul/2015
 ! 
 
+! Force (nxd,nzd) to be at most the product of a
+! power of 2 and a single factor 3.
+!#define useFFTfit
+
+! Activate the body forcing for impulse response
 !#define IMPULSE
 !#define fx
+
 
 MODULE dnsdata
 
@@ -78,8 +84,13 @@ MODULE dnsdata
   !--------------------------------------------------------------!
   !---------------------- Read input files ----------------------!
   SUBROUTINE read_dnsin()
+    logical :: i
     OPEN(15, file='dns.in')
-    READ(15, *) nx, ny, nz; READ(15, *) alfa0, beta0; nxd=96; nzd=192 !nxd=3*nx/2;nzd=3*nz
+    READ(15, *) nx, ny, nz; READ(15, *) alfa0, beta0; nxd=3*nx/2;nzd=3*nz
+#ifdef useFFTfit
+    i=fftFIT(nxd); DO WHILE (.NOT. i); nxd=nxd+1; i=fftFIT(nxd); END DO
+    i=fftFIT(nzd); DO WHILE (.NOT. i); nzd=nzd+1; i=fftFIT(nzd); END DO
+#endif
     READ(15, *) ni; READ(15, *) a, ymin, ymax; ni=1/ni
     READ(15, *) meanpx, meanpz; READ(15, *) meanflowx, meanflowz
     READ(15, *) deltat, cflmax, time

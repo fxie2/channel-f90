@@ -43,6 +43,17 @@ CONTAINS
                                                VVd, [nzd,nxd+1], 1, (nxd+1)*nzd, plan_type)
   END SUBROUTINE init_fft
 
+  LOGICAL FUNCTION fftFIT(i) result(isFIT)
+    integer(C_INT), intent(in) :: i
+    integer(C_INT) :: j
+    j=i
+    DO WHILE ( MOD(j,2)==0 )
+      j=SHIFTA(j,1)
+    END DO
+    isFIT=( (j==1) .OR. (j==3) )
+    !WRITE(*,*) i,j,isFIT
+  END FUNCTION fftFIT
+
   SUBROUTINE IFT(x,rx) 
     complex(C_DOUBLE_COMPLEX), intent(inout) :: x(:,:,:)
     real(C_DOUBLE), intent(inout) :: rx(:,:,:)
