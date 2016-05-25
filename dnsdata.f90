@@ -13,7 +13,7 @@
 
 ! Force (nxd,nzd) to be at most the product of a
 ! power of 2 and a single factor 3.
-!#define useFFTfit
+#define useFFTfit
 
 ! Activate the body forcing for impulse response
 !#define IMPULSE
