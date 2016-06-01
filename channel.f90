@@ -5,51 +5,72 @@
 !                                            !
 !============================================!
 ! 
-! Author: M.Sc. Davide Gatti
+! This program has been written following the
+! KISS (Keep it Simple and Stupid) philosophy
+!           
+! Author: Dr.-Ing. Davide Gatti
 ! Date  : 28/Jul/2015
 ! 
+
+! Measure per timestep execution time
+#define chron
+
 
 PROGRAM channel
 
   USE dnsdata
- 
+#ifdef crhon
+  REAL timei,timee 
+#endif
+
+  ! Read simulation params
+  CALL read_dnsin()
+  CALL init_memory()
+
+  ! Init various subroutines
+  CALL init_fft(VVd,rVVd,nxd,nzd)
+  CALL setup_derivatives()
+  CALL setup_boundary_conditions()
+  CALL read_restart_file()
+
+  ! Output DNS.in
   WRITE(*,*) " "
   WRITE(*,*) "!====================================================!"
   WRITE(*,*) "!                     D   N   S                      !"
   WRITE(*,*) "!====================================================!"
   WRITE(*,*) " "
-
-  CALL init_fft(rVd,Vd,rVVd,VVd,nxd,nzd)
-  CALL setup_derivatives()
-  CALL setup_boundary_conditions()
-  CALL read_restart_file(V)
-
-  ! Output DNS.in
   WRITE(*,"(A,I5,A,I5,A,I5)") "   nx =",nx,"   ny =",ny,"   nz =",nz
   WRITE(*,"(A,I5,A,I5)") "   nxd =",nxd,"  nzd =",nzd
   WRITE(*,"(A,F6.4,A,F6.4,A,F8.6)") "   alfa0 =",alfa0,"       beta0 =",beta0,"   ni =",ni
   WRITE(*,"(A,F6.4,A,F6.4)") "   meanpx =",meanpx,"      meanpz =",meanpz
-  WRITE(*,"(A,F6.4,A,F6.4)") "   meanflowx =",meanflowx, "   meanflowz =", meanflowx
+  WRITE(*,"(A,F6.4,A,F6.4)") "   meanflowx =",meanflowx, "   meanflowz =", meanflowz
   WRITE(*,*) " "
 
-  !Time loop
-  WRITE(*,*) time,sum(d140(-2:2)*dreal(V(0,0,-1:3)%u)),-sum(d14n(-2:2)*dreal(V(0,0,ny-3:ny+1)%u))
+  ! Compute CFL
+  DO iy=0,ny
+   CALL convolutions(iy,1,.TRUE.)
+  END DO
+  ! Time loop
+  CALL outstats()
   timeloop: DO WHILE (time<t_max-deltat/2.0) 
-    time=time+2.0/RK1_rai_coeff*deltat
-    CALL buildrhs(RK1_rai); CALL linsolve(RK1_rai_coeff/deltat)
-    time=time+2.0/RK2_rai_coeff*deltat
-    CALL buildrhs(RK2_rai); CALL linsolve(RK2_rai_coeff/deltat)
-    time=time+2.0/RK3_rai_coeff*deltat
-    CALL buildrhs(RK3_rai); CALL linsolve(RK3_rai_coeff/deltat)
-    !Outstats
-    WRITE(*,*) time,sum(d140(-2:2)*dreal(V(0,0,-1:3)%u)),-sum(d14n(-2:2)*dreal(V(0,0,ny-3:ny+1)%u))
-    !Write output field
-    IF (FLOOR((time+0.5*deltat)/dt_save) > FLOOR((time-0.5*deltat)/dt_save)) THEN
-      WRITE(*,*) "Writing Dati.cart.out at time ", time
-      CALL save_restart_file(V)
-    END IF
+#ifdef chron
+    CALL CPU_TIME(timei)
+#endif
+    time=time+2.0/RK1_rai(1)*deltat
+    CALL buildrhs(RK1_rai,.TRUE. ); CALL linsolve(RK1_rai(1)/deltat)
+    time=time+2.0/RK2_rai(1)*deltat
+    CALL buildrhs(RK2_rai,.FALSE.); CALL linsolve(RK2_rai(1)/deltat)
+    time=time+2.0/RK3_rai(1)*deltat
+    CALL buildrhs(RK3_rai,.FALSE.); CALL linsolve(RK3_rai(1)/deltat)
+    CALL outstats()
+#ifdef chron
+    CALL CPU_TIME(timee)
+    WRITE(*,*) timee-timei
+#endif
   END DO timeloop
 
+  ! Realease memory
   CALL free_fft()
+  CALL free_memory()
 
 END PROGRAM channel
